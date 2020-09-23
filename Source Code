@@ -1,0 +1,175 @@
+
+
+/* 
+ Connection:
+ 
+ JST Pin 1 (Black Wire)  => Arduino GND
+ JST Pin 3 (Red wire)    => Arduino 5VDC
+ JST Pin 4 (Yellow wire) => Arduino Digital Pin 8
+
+ Green Led connected to Arduino D7
+ Yellow Led connected to Arduino D6
+ Red Led connected to Arduino D5
+ 
+ 
+Dust Sensor possible application:
+- Applications of customer
+- Air quality sensor
+- Dustlessness workshop
+- Cigarette detector
+*/
+
+/*
+Sensor is to create Digital (Lo Pulse) output to Particulate Matters (PM). Lo Pulse Occupancy time (LPO time) is in proportion
+to PM concentration. The output is for PM whose size is around 1 micro meter or larger. We can use the sensor to detect the dust in clean room.
+Minimum detect particle: 1um
+
+ */
+ 
+#include "ThingSpeak.h"
+
+#define USE_ETHERNET_SHIELD
+
+#if !defined(USE_WIFI101_SHIELD) && !defined(USE_ETHERNET_SHIELD) && !defined(ARDUINO_SAMD_MKR1000) && !defined(ARDUINO_AVR_YUN) && !defined(ARDUINO_ARCH_ESP8266)
+  #error "Uncomment the #define for either USE_WIFI101_SHIELD or USE_ETHERNET_SHIELD"
+#endif
+
+#if defined(ARDUINO_AVR_YUN)
+    #include "YunClient.h"
+    YunClient client;
+#else
+  #if defined(USE_WIFI101_SHIELD) || defined(ARDUINO_SAMD_MKR1000) || defined(ARDUINO_ARCH_ESP8266)
+    // Use WiFi
+    #ifdef ARDUINO_ARCH_ESP8266
+      #include <ESP8266WiFi.h>
+    #else
+      #include <SPI.h>
+      #include <WiFi101.h>
+    #endif
+    char ssid[] = "<YOURNETWORK>";    //  your network SSID (name) 
+    char pass[] = "<YOURPASSWORD>";   // your network password
+    int status = WL_IDLE_STATUS;
+    WiFiClient  client;
+  #elif defined(USE_ETHERNET_SHIELD)
+    // Use wired ethernet shield
+    #include <SPI.h>
+    #include <Ethernet.h>
+    byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
+    EthernetClient client;
+  #endif
+#endif
+
+#ifdef ARDUINO_ARCH_AVR
+  // On Arduino:  0 - 1023 maps to 0 - 5 volts
+  #define VOLTAGE_MAX 5.0
+  #define VOLTAGE_MAXCOUNTS 1023.0
+#elif ARDUINO_SAMD_MKR1000
+  // On MKR1000:  0 - 1023 maps to 0 - 3.3 volts
+  #define VOLTAGE_MAX 3.3
+  #define VOLTAGE_MAXCOUNTS 1023.0
+#elif ARDUINO_SAM_DUE
+  // On Due:  0 - 1023 maps to 0 - 3.3 volts
+  #define VOLTAGE_MAX 3.3
+  #define VOLTAGE_MAXCOUNTS 1023.0  
+#elif ARDUINO_ARCH_ESP8266
+  // On ESP8266:  0 - 1023 maps to 0 - 1 volts
+  #define VOLTAGE_MAX 1.0
+  #define VOLTAGE_MAXCOUNTS 1023.0
+#endif
+
+
+unsigned long myChannelNumber = 374667;
+const char * myWriteAPIKey = "5FK9WCKFWVYQOY8N";
+
+
+int pin = 8;
+unsigned long duration;
+unsigned long starttime;
+unsigned long sampletime_ms = 5000;//sample 30s ;
+unsigned long lowpulseoccupancy = 0;
+float ratio = 0;
+float concentration = 0;
+int gLed = 7;
+int yLed = 6;
+int rLed = 5;
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(8,INPUT);
+  pinMode(gLed,OUTPUT);
+  pinMode(yLed,OUTPUT);
+  pinMode(rLed,OUTPUT);
+  starttime = millis();//get the current time;
+  Serial.println("Stabilizing, please wait...");
+  delay(60000);
+  
+  //Thingspeak code below
+  #ifdef ARDUINO_AVR_YUN
+    Bridge.begin();
+  #else   
+    #if defined(ARDUINO_ARCH_ESP8266) || defined(USE_WIFI101_SHIELD) || defined(ARDUINO_SAMD_MKR1000)
+      WiFi.begin(ssid, pass);
+    #else
+      Ethernet.begin(mac);
+    #endif
+  #endif
+
+  ThingSpeak.begin(client);
+}
+
+void loop() {
+  duration = pulseIn(pin, LOW);//Waits for pulse to go to LOW and starts timing until the pulse goes HIGH
+  lowpulseoccupancy = lowpulseoccupancy+duration;//lowpulseoccupancy is basically duration of Shinyei pulses
+
+  if ((millis()-starttime) > sampletime_ms)//if the sample time == 5s
+  //millis() calculates the milliseconds since the Arduino started running the current program
+  //Basically, it starts the following block if 5 seconds have passed since the board was booted
+  
+  {
+    ratio = lowpulseoccupancy/(sampletime_ms*10.0);  //Ratio of time the pulse was high
+    concentration = 1.1*pow(ratio,3)-3.8*pow(ratio,2)+520*ratio+0.62; // using spec sheet curve formula from Shinyei documentation
+    
+    
+    
+    ThingSpeak.writeField(myChannelNumber, 1, concentration, myWriteAPIKey);
+    //delay(20000); // ThingSpeak will only accept updates every 15 seconds.
+    
+    Serial.print("concentration = ");
+    Serial.print(concentration);
+    Serial.print(" pcs/0.01cf  -  ");
+    
+    if (concentration < 1.0) {
+     Serial.println("It's a smokeless and dustless environment"); 
+     digitalWrite(gLed, HIGH);
+     digitalWrite(yLed, LOW);
+     digitalWrite(rLed, LOW);
+     delay(5000);
+    }
+    if (concentration > 1.0 && concentration < 9000) {
+     Serial.println("It's probably only you blowing air to the sensor :)"); 
+     digitalWrite(gLed, HIGH);
+     digitalWrite(yLed, LOW);
+     digitalWrite(rLed, LOW);
+     delay(5000);
+    }
+    if (concentration > 9000 && concentration < 18000) {
+     Serial.println("Smokes from matches detected!"); 
+     digitalWrite(gLed, LOW);
+     digitalWrite(yLed, HIGH);
+     digitalWrite(rLed, LOW);
+     delay(5000);
+    }
+    if (concentration > 18000){
+     Serial.println("Smokes from cigarettes detected! Or It might be a huge fire! Beware!"); 
+     digitalWrite(gLed, LOW);
+     digitalWrite(yLed, LOW);
+     digitalWrite(rLed, HIGH);
+     delay(5000);
+    }
+    
+    lowpulseoccupancy = 0;
+    starttime = millis();
+  }
+  
+  
+}
